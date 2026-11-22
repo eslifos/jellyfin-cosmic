@@ -2,6 +2,11 @@ name: Publicar Jellyfin Cosmic
 
 on:
   push:
+    # A push to main only builds and tests; a version tag also publishes
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
     tags:
       - 'v*'
   workflow_dispatch:
@@ -37,9 +42,12 @@ jobs:
           INPUT_PUBLISH: ${{ inputs.publish }}
           OWNER: ${{ github.repository_owner }}
         run: |
-          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             version="${GITHUB_REF_NAME#v}"
             publish=true
+          elif [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            version="0.0.$GITHUB_RUN_NUMBER-1"
+            publish=false
           else
             version="$INPUT_VERSION"
             publish="$INPUT_PUBLISH"
