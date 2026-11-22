@@ -1,0 +1,23 @@
+[Unit]
+Description=Jellyfin Cosmic
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jellyfin-cosmic
+Group=jellyfin-cosmic
+Environment=PATH=/opt/jellyfin-cosmic/tools:/usr/local/bin:/usr/bin:/bin
+Environment=LANG=C.UTF-8
+Environment=MALLOC_TRIM_THRESHOLD_=131072
+Environment=MALLOC_ARENA_MAX=2
+Environment=DOTNET_GCConserveMemory=5
+ExecStart=/opt/jellyfin-cosmic/server/jellyfin --datadir /var/lib/jellyfin-cosmic --cachedir /var/cache/jellyfin-cosmic --logdir /var/log/jellyfin-cosmic --webdir /opt/jellyfin-cosmic/web --ffmpeg /usr/bin/ffmpeg
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+SuccessExitStatus=0 143
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,20 @@
+<service>
+  <id>JellyfinCosmic</id>
+  <name>Jellyfin Cosmic</name>
+  <description>Servidor multimedia Jellyfin Cosmic</description>
+  <executable>%BASE%\server\jellyfin.exe</executable>
+  <arguments>--datadir "%ProgramData%\JellyfinCosmic\data" --cachedir "%ProgramData%\JellyfinCosmic\cache" --logdir "%ProgramData%\JellyfinCosmic\log" --webdir "%BASE%\web" --ffmpeg "%BASE%\ffmpeg\ffmpeg.exe"</arguments>
+  <env name="PATH" value="%BASE%\tools;%BASE%\ffmpeg;%PATH%"/>
+  <env name="DOTNET_GCConserveMemory" value="5"/>
+  <startmode>Automatic</startmode>
+  <delayedAutoStart>true</delayedAutoStart>
+  <stoptimeout>30 sec</stoptimeout>
+  <onfailure action="restart" delay="10 sec"/>
+  <onfailure action="restart" delay="30 sec"/>
+  <resetfailure>1 hour</resetfailure>
+  <logpath>%ProgramData%\JellyfinCosmic\service-log</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10240</sizeThreshold>
+    <keepFiles>3</keepFiles>
+  </log>
+</service>

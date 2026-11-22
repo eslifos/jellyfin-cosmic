@@ -1,0 +1,25 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ]; then
+    if ! getent passwd jellyfin-cosmic >/dev/null; then
+        adduser --system --group --home /var/lib/jellyfin-cosmic --no-create-home --shell /usr/sbin/nologin jellyfin-cosmic
+    fi
+    # Video cards are used through these groups, when the machine has them
+    for group in video render; do
+        if getent group "$group" >/dev/null; then
+            adduser jellyfin-cosmic "$group" >/dev/null
+        fi
+    done
+    install -d -o jellyfin-cosmic -g jellyfin-cosmic -m 750 /var/lib/jellyfin-cosmic /var/cache/jellyfin-cosmic /var/log/jellyfin-cosmic
+    # yt-dlp updates itself: YouTube changes often
+    chown -R jellyfin-cosmic:jellyfin-cosmic /opt/jellyfin-cosmic/tools
+
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload
+        systemctl enable jellyfin-cosmic.service >/dev/null
+        systemctl restart jellyfin-cosmic.service
+    fi
+fi
+
+exit 0

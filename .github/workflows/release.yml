@@ -1,0 +1,284 @@
+name: Publicar Jellyfin Cosmic
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Versión (por ejemplo 12.4.0-1)'
+        required: true
+      publish:
+        description: 'Publicar la imagen de Docker y la versión en GitHub'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  SERVER_BRANCH: feature/cosmic-12.4
+  WEB_BRANCH: feature/cosmic-dark-v12.4
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.info.outputs.version }}
+      publish: ${{ steps.info.outputs.publish }}
+      image: ${{ steps.info.outputs.image }}
+      server_sha: ${{ steps.info.outputs.server_sha }}
+      web_sha: ${{ steps.info.outputs.web_sha }}
+    steps:
+      - id: info
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            version="${GITHUB_REF_NAME#v}"
+            publish=true
+          else
+            version="$INPUT_VERSION"
+            publish="$INPUT_PUBLISH"
+          fi
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$'; then
+            echo "La versión debe verse como 12.4.0-1" >&2
+            exit 1
+          fi
+          # The same exact source for every package, and written in the release notes
+          server_sha=$(git ls-remote "https://github.com/$OWNER/jellyfin.git" "refs/heads/$SERVER_BRANCH" | cut -f1)
+          web_sha=$(git ls-remote "https://github.com/$OWNER/jellyfin-web.git" "refs/heads/$WEB_BRANCH" | cut -f1)
+          [ -n "$server_sha" ] && [ -n "$web_sha" ]
+          {
+            echo "version=$version"
+            echo "publish=$publish"
+            echo "image=ghcr.io/$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')/jellyfin-cosmic"
+            echo "server_sha=$server_sha"
+            echo "web_sha=$web_sha"
+          } >> "$GITHUB_OUTPUT"
+
+  web:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/jellyfin-web
+          ref: ${{ needs.prepare.outputs.web_sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --no-audit
+      - run: npm run build:production
+      - run: tar -czf web.tar.gz -C dist .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web
+          path: web.tar.gz
+          retention-days: 3
+
+  server:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { target: linux-amd64, rid: linux-x64 }
+          - { target: linux-arm64, rid: linux-arm64 }
+          - { target: windows-x64, rid: win-x64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: packaging
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/jellyfin
+          ref: ${{ needs.prepare.outputs.server_sha }}
+          path: source
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: source/global.json
+      - name: Compilar
+        run: |
+          dotnet publish source/Jellyfin.Server/Jellyfin.Server.csproj \
+            --configuration Release \
+            --runtime "${{ matrix.rid }}" \
+            --self-contained true \
+            --output payload/server \
+            -p:DebugType=none \
+            -p:DebugSymbols=false
+      - name: Agregar herramientas
+        run: |
+          bash packaging/scripts/fetch-tools.sh "${{ matrix.target }}" payload
+          mkdir -p payload/scripts
+          cp packaging/scripts/reparar-vobsub.py payload/scripts/
+      - run: tar -czf "payload-${{ matrix.target }}.tar.gz" -C payload .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: payload-${{ matrix.target }}
+          path: payload-${{ matrix.target }}.tar.gz
+          retention-days: 3
+
+  docker:
+    needs: [prepare, web, server]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Preparar archivos
+        run: |
+          for arch in amd64 arm64; do
+            mkdir -p "docker/payload/linux-$arch"
+            tar -xzf "artifacts/payload-linux-$arch.tar.gz" -C "docker/payload/linux-$arch"
+          done
+          mkdir -p docker/payload/web
+          tar -xzf artifacts/web.tar.gz -C docker/payload/web
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Compilar imagen de prueba
+        uses: docker/build-push-action@v6
+        with:
+          context: docker
+          platforms: linux/amd64
+          load: true
+          tags: jellyfin-cosmic:test
+      - name: Probar que arranca
+        run: bash scripts/smoke-docker.sh jellyfin-cosmic:test
+      - uses: docker/login-action@v3
+        if: needs.prepare.outputs.publish == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publicar imagen
+        if: needs.prepare.outputs.publish == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: docker
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.version }}
+            ${{ needs.prepare.outputs.image }}:latest
+          labels: |
+            org.opencontainers.image.title=Jellyfin Cosmic
+            org.opencontainers.image.description=Versión modificada de Jellyfin, no afiliada al proyecto oficial
+            org.opencontainers.image.licenses=GPL-2.0-or-later
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+
+  linux:
+    needs: [prepare, web, server]
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Armar paquetes
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p payload web dist
+          tar -xzf "artifacts/payload-linux-$ARCH.tar.gz" -C payload
+          tar -xzf artifacts/web.tar.gz -C web
+          bash linux/build-deb.sh "$VERSION" "$ARCH" payload web dist
+          name="jellyfin-cosmic-$VERSION-linux-$ARCH"
+          mkdir -p "portable/$name"
+          cp -a payload/. "portable/$name/"
+          cp -a web "portable/$name/web"
+          cp LICENSE NOTICE.md "portable/$name/"
+          cp linux/start.sh "portable/$name/start.sh"
+          chmod 755 "portable/$name/start.sh"
+          tar -czf "dist/$name.tar.gz" -C portable "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-${{ matrix.arch }}
+          path: dist/*
+          retention-days: 3
+
+  windows:
+    needs: [prepare, web, server]
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Preparar archivos
+        shell: bash
+        run: |
+          mkdir -p windows/payload/web dist
+          tar -xzf artifacts/payload-windows-x64.tar.gz -C windows/payload
+          tar -xzf artifacts/web.tar.gz -C windows/payload/web
+          cp windows/JellyfinCosmicService.xml windows/payload/winsw/
+      - name: Instalar Inno Setup
+        shell: pwsh
+        run: choco install innosetup --version=6.4.3 --no-progress -y
+      - name: Crear instalador
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" windows\jellyfin-cosmic.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Probar instalación
+        shell: pwsh
+        run: windows\test-install.ps1 (Get-ChildItem dist\*-setup.exe).FullName
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: dist/*
+          retention-days: 3
+
+  release:
+    if: needs.prepare.outputs.publish == 'true'
+    needs: [prepare, docker, linux, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Crear versión
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          IMAGE: ${{ needs.prepare.outputs.image }}
+          OWNER: ${{ github.repository_owner }}
+          SERVER_SHA: ${{ needs.prepare.outputs.server_sha }}
+          WEB_SHA: ${{ needs.prepare.outputs.web_sha }}
+        run: |
+          (cd dist && sha256sum * > SHA256SUMS)
+          cat > notes.md <<EOF
+          Versión modificada de Jellyfin, no afiliada al proyecto oficial.
+
+          **Docker:** \`docker pull $IMAGE:$VERSION\`
+
+          **Código fuente de esta versión (GPL):**
+          - Servidor: https://github.com/$OWNER/jellyfin/tree/$SERVER_SHA
+          - Web: https://github.com/$OWNER/jellyfin-web/tree/$WEB_SHA
+          EOF
+          sed -i 's/^          //' notes.md
+          gh release create "v$VERSION" dist/* --title "Jellyfin Cosmic $VERSION" --notes-file notes.md --target "$GITHUB_SHA"

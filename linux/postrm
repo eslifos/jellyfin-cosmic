@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload || true
+fi
+
+# The libraries, users and settings in /var/lib/jellyfin-cosmic are never deleted automatically
+if [ "$1" = "purge" ]; then
+    echo "Tus datos se conservaron en /var/lib/jellyfin-cosmic"
+fi
+
+exit 0

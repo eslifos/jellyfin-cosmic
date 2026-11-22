@@ -1,0 +1,16 @@
+services:
+  jellyfin-cosmic:
+    image: ghcr.io/eslifos/jellyfin-cosmic:latest
+    container_name: jellyfin-cosmic
+    restart: unless-stopped
+    ports:
+      - "8096:8096"
+    volumes:
+      - jellyfin-cosmic-config:/config
+      - jellyfin-cosmic-cache:/cache
+      # Cambia la parte izquierda por la carpeta donde están tus películas y series
+      - /ruta/a/tus/medios:/media:ro
+
+volumes:
+  jellyfin-cosmic-config:
+  jellyfin-cosmic-cache:
