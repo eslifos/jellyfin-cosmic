@@ -110,9 +110,11 @@ jobs:
           path: source
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 10.0.x
+          dotnet-version: 10.0.115
       - name: Compilar
         run: |
+          # Newer SDKs add code rules that stop the build: always the one this source was checked with
+          printf '{"sdk":{"version":"10.0.115","rollForward":"disable"}}' > source/global.json
           dotnet publish source/Jellyfin.Server/Jellyfin.Server.csproj \
             --configuration Release \
             --runtime "${{ matrix.rid }}" \
